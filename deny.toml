@@ -1,0 +1,22 @@
+# cargo-deny for the fixture crate. It has no dependencies, so this mainly
+# gives supply-chain.yml something real to read.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+ignore = []
+# An ignore that no tracked lockfile reaches any more fails the gate.
+unused-ignored-advisory = "deny"
+
+[licenses]
+allow = ["MIT", "Apache-2.0"]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,266 @@
+name: Mutation testing
+
+# The full mutation sweep and the per-diff run. Which one runs follows the
+# caller's event: the per-diff job on push and pull_request, the full sweep
+# on workflow_dispatch and schedule. A caller that schedules other jobs but
+# wants the sweep on dispatch only puts `if: github.event_name !=
+# 'schedule'` on its calling job. Scope and speed come from the caller's
+# `.cargo/mutants.toml` (cargo-mutants reads no other path) and
+# `.config/nextest.toml`.
+#
+# Exit 3 (some mutants timed out) fails the run. A mutant known to hang,
+# such as an infinite loop no assertion can catch sooner, goes in the
+# caller's `exclude_re` with a comment saying the timeout detects it, so
+# that a new timeout still shows up red.
+
+on:
+  workflow_call:
+    inputs:
+      shards:
+        description: >-
+          How many jobs the full sweep is split into, round-robin, so slow
+          files spread across shards. 1 runs it unsharded.
+        type: number
+        default: 1
+      mutants-args:
+        description: >-
+          Extra arguments for every `cargo mutants` call, parsed as shell
+          words, so quote one that contains spaces (e.g.
+          `--test-workspace=true -E "impl Debug"`).
+        type: string
+        default: ""
+      setup:
+        description: >-
+          Bash run before the build in both jobs, for what the build needs
+          that is not checked in (e.g. stub wasm-pack output). To set an
+          environment variable for later steps, append it to
+          `$GITHUB_ENV`.
+        type: string
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  # A matrix cannot count from a number, so this job turns `shards` into
+  # the list of shard indices.
+  plan:
+    name: Plan the mutation sweep
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.shards.outputs.list }}
+    steps:
+      - name: List the shards
+        id: shards
+        env:
+          SHARDS: ${{ inputs.shards }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$SHARDS" =~ ^[1-9][0-9]*$ ]] || [ "$SHARDS" -gt 256 ]; then
+            echo "::error::shards must be a whole number from 1 to 256, not '$SHARDS'"
+            exit 1
+          fi
+          echo "list=$(jq -nc --argjson n "$SHARDS" '[range($n)]')" >> "$GITHUB_OUTPUT"
+
+  mutation-testing:
+    name: Mutation Testing (full${{ inputs.shards > 1 && format(', shard {0}/{1}', matrix.shard, inputs.shards) || '' }})
+    needs: plan
+    runs-on: ubuntu-latest
+    # GitHub's ceiling for a hosted job. A sweep that nears it needs more
+    # shards.
+    timeout-minutes: 360
+    strategy:
+      # Every shard reports, so one red shard does not hide the others'
+      # survivors.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      # Ahead of the cache, so a CARGO_* variable it sets reaches the cache
+      # key.
+      - name: Run the caller's setup
+        if: inputs.setup != ''
+        shell: bash
+        env:
+          SETUP: ${{ inputs.setup }}
+        run: eval "$SETUP"
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: mutants
+          # The tools come from install-action on every run.
+          cache-bin: false
+          # cargo-mutants builds in a copy of the tree, so this holds the
+          # registry and git sources, not target/. One shard saving it is
+          # enough.
+          save-if: ${{ matrix.shard == 0 }}
+
+      # Every install-action step sets `fallback: none`. The default,
+      # `cargo-binstall`, checks no checksum, and it quietly installs a tool
+      # missing from the action's manifest instead of failing.
+      - name: Install cargo-nextest and cargo-mutants
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-nextest,cargo-mutants
+          fallback: none
+
+      # `--shard 0/1` selects every mutant, so an unsharded sweep takes the
+      # same arguments.
+      - name: Run mutation testing
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ inputs.shards }}
+          MUTANTS_ARGS: ${{ inputs.mutants-args }}
+        run: |
+          set -euo pipefail
+          # Shell words, with globbing off so a pattern reaches cargo-mutants
+          # as written.
+          set -f
+          eval "args=($MUTANTS_ARGS)"
+          set +f
+          cargo mutants --shard "$SHARD/$SHARDS" --sharding round-robin "${args[@]}"
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mutation-report${{ inputs.shards > 1 && format('-shard-{0}', matrix.shard) || '' }}
+          path: mutants.out/
+
+  mutation-testing-diff:
+    name: Mutation Testing (diff)
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # A pull request needs only HEAD^1. A push needs history, for
+          # `before` and the merge base with the default branch.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
+          persist-credentials: false
+
+      # Before anything is installed, so a push that changes no Rust source
+      # pays for nothing else. The base of the diff:
+      #
+      # - pull request: HEAD^1. HEAD is GitHub's merge commit, and its first
+      #   parent is the base the pull request was merged onto.
+      # - push: the previous tip (`before`).
+      # - a branch's first push, or a `before` that no longer resolves (a
+      #   force-push): the merge base with the default branch, so every
+      #   commit the branch adds is mutated, not only the last.
+      # - the default branch's first push: git's empty tree, the whole repo.
+      #
+      # An unresolvable `before` on the default branch fails the job, since
+      # there the merge base is HEAD and nothing would be mutated.
+      # `--no-renames` because a pure `git mv` otherwise shows no content
+      # lines, which `--in-diff` reads as nothing changed.
+      - name: Compute the diff
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          REF: ${{ github.ref }}
+          SHARDS: ${{ inputs.shards }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # The sweep's plan job checks this too, but it does not run on a
+          # push or pull request, where a bad value would otherwise pass.
+          if ! [[ "$SHARDS" =~ ^[1-9][0-9]*$ ]] || [ "$SHARDS" -gt 256 ]; then
+            echo "::error::shards must be a whole number from 1 to 256, not '$SHARDS'"
+            exit 1
+          fi
+          resolves() { git rev-parse --verify --quiet "$1^{commit}" > /dev/null; }
+          empty_tree=$(git hash-object -t tree /dev/null)
+          on_default=false
+          if [ "$REF" = "refs/heads/$DEFAULT_BRANCH" ]; then on_default=true; fi
+          first_push=false
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then first_push=true; fi
+
+          if [ "$EVENT" = pull_request ]; then
+            base=HEAD^1
+          elif [ "$first_push" = false ] && resolves "$BEFORE"; then
+            base=$BEFORE
+          elif [ "$on_default" = true ] && [ "$first_push" = true ]; then
+            base=$empty_tree
+          elif [ "$on_default" = true ]; then
+            echo "::error::diff base '$BEFORE' does not resolve (a force-push to $DEFAULT_BRANCH?), so nothing would be mutated. The next push diffs normally; run the full sweep by hand to cover this one."
+            exit 1
+          elif resolves "origin/$DEFAULT_BRANCH"; then
+            base=$(git merge-base "origin/$DEFAULT_BRANCH" HEAD) || base=$empty_tree
+          else
+            base=$empty_tree
+          fi
+          git diff --no-renames "$base" HEAD > "$RUNNER_TEMP/mutants.diff"
+          # git's own pathspec, not a grep over `--name-only`, which quotes
+          # and escapes a path with non-ASCII characters.
+          if ! git diff --quiet --no-renames "$base" HEAD -- '*.rs'; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "mutating the Rust changes since $base"
+          else
+            echo "no Rust source changed since $base; nothing to mutate"
+          fi
+
+      - name: Install Rust
+        if: steps.diff.outputs.rust == 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Run the caller's setup
+        if: steps.diff.outputs.rust == 'true' && inputs.setup != ''
+        shell: bash
+        env:
+          SETUP: ${{ inputs.setup }}
+        run: eval "$SETUP"
+
+      - name: Cache Cargo
+        if: steps.diff.outputs.rust == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # The same registry and git sources as the full sweep's cache.
+          shared-key: mutants
+          cache-bin: false
+
+      - name: Install cargo-nextest and cargo-mutants
+        if: steps.diff.outputs.rust == 'true'
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-nextest,cargo-mutants
+          fallback: none
+
+      - name: Run mutation testing on the diff
+        if: steps.diff.outputs.rust == 'true'
+        env:
+          MUTANTS_ARGS: ${{ inputs.mutants-args }}
+        run: |
+          set -euo pipefail
+          # Shell words, with globbing off so a pattern reaches cargo-mutants
+          # as written.
+          set -f
+          eval "args=($MUTANTS_ARGS)"
+          set +f
+          cargo mutants --in-diff "$RUNNER_TEMP/mutants.diff" "${args[@]}"
+
+      - name: Upload mutation report
+        if: always() && steps.diff.outputs.rust == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mutation-report-diff
+          path: mutants.out/

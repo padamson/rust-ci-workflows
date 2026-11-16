@@ -1,0 +1,9 @@
+# A fixture for CI, not a library: `ci.yml` calls this repo's reusable
+# workflows against it, so a change to them runs end to end before it is
+# tagged. It has no dependencies and is never published.
+[package]
+name = "rust-ci-workflows-selftest"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false

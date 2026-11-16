@@ -1,0 +1,121 @@
+name: CI
+
+# Lints the workflows, then calls each reusable workflow against the fixture
+# crate at the repo root, so a change to one runs end to end before it is
+# tagged. The weekly and manual runs also exercise the sharded full mutation
+# sweep, which is the only run that mutates the fixture when a push leaves
+# `src/` alone.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Saturday 5am ET
+    - cron: '0 9 * * 6'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run it replaces. Every other
+# run gets a group of its own, so none waits on or is replaced by another:
+# each push to main is mutated over its own `before..sha` range.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # install-action's manifest has no actionlint, so it comes from the
+      # release, checked against the SHA-256 pinned here. Dependabot cannot
+      # move these two lines; bump them together by hand from the release's
+      # checksums file.
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" actionlint
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Install zizmor
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: zizmor
+          fallback: none
+
+      - name: Run actionlint
+        run: actionlint
+
+      # The whole repo, so dependabot.yml is audited too. Online, so the
+      # audits that ask GitHub (an action pin that is not on its repo, a tag
+      # that moved) run as well.
+      - name: Run zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --format github .
+
+  fixture:
+    name: Fixture checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Clippy and nextest both build the test cfg, which requires this
+    # under GitHub Actions: see src/lib.rs.
+    env:
+      SELFTEST_SETUP: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-nextest
+          fallback: none
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo nextest run --locked
+
+  # zizmor's self-repository audit asks for `$/` in place of `./`, which
+  # actionlint 1.7.12 rejects. Revisit when actionlint accepts `$/`.
+  supply-chain:
+    uses: ./.github/workflows/supply-chain.yml # zizmor: ignore[self-repository]
+
+  semver-preview:
+    uses: ./.github/workflows/semver-preview.yml # zizmor: ignore[self-repository]
+
+  mutation:
+    uses: ./.github/workflows/mutation.yml # zizmor: ignore[self-repository]
+    with:
+      shards: 2
+      mutants-args: --jobs 2
+      # SELFTEST_SETUP: see src/lib.rs.
+      setup: echo "SELFTEST_SETUP=1" >> "$GITHUB_ENV"

@@ -1,0 +1,3 @@
+# cargo-mutants reads `.cargo/mutants.toml` and nothing else.
+# Docs: https://mutants.rs/config-file.html
+test_tool = "nextest"

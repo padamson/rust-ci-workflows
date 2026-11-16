@@ -1,0 +1,8 @@
+{
+  "sandbox": {
+    "network": {
+      "allowMachLookup": ["com.apple.SystemConfiguration.configd", "com.apple.trustd.agent"]
+    },
+    "excludedCommands": ["git *", "gh *"]
+  }
+}

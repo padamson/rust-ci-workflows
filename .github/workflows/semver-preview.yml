@@ -1,0 +1,100 @@
+name: Semver preview
+
+# The early signal for a release workflow's semver gate, which runs only on
+# the tag: by then the release commit is on main and the tag is public. Call
+# it from security.yml; it runs on push and pull_request events and skips
+# itself on any other. Not a required check. Between releases Cargo.toml
+# still carries the last released version, which cargo-semver-checks reads
+# as a minor bump, so a red run means the next release needs a bigger bump
+# than planned, not that the change is wrong; on 0.x every deliberate break
+# would otherwise block merging until the bump landed. The check also sees
+# only the breaks it has lints for (a changed return type passes), so the
+# CHANGELOG's breaking entries are the other half of it.
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  semver-preview:
+    name: Semver preview
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # A crate whose manifest still names the template's placeholder
+      # repository has the placeholder's name too, and the crates.io crate
+      # of that name is someone else's, so it is passed over. Only a 404
+      # from crates.io skips a crate: any other answer fails the job, since
+      # skipping on an outage would check nothing. `--retry` alone does not
+      # retry a refused connection or a failed DNS lookup, hence
+      # `--retry-all-errors`; `|| true` lets curl's `000` reach the error
+      # arm instead of ending the step at the assignment. This runs on the
+      # runner image's cargo, before anything is installed or cached, so a
+      # repo with nothing to compare pays for neither.
+      - name: List the crates to compare
+        id: crates
+        env:
+          # Fixed, so a private caller's repository name does not reach
+          # crates.io's logs.
+          USER_AGENT: rust-ci-workflows semver-preview (https://github.com/padamson/rust-ci-workflows)
+        run: |
+          set -euo pipefail
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          publishes='(.publish == null or (.publish | index("crates-io")))'
+          has_lib='any(.targets[]; any(.kind[]; . == "lib" or . == "rlib"))'
+          placeholder='.repository == "https://github.com/OWNER/REPO"'
+          jq -r ".packages[] | select($publishes) | select($placeholder) | .name" <<< "$metadata" \
+            | while read -r crate; do echo "$crate still names the placeholder repository; nothing of its own on crates.io"; done
+          jq -r ".packages[] | select($publishes) | select($placeholder | not) | select($has_lib | not) | .name" <<< "$metadata" \
+            | while read -r crate; do echo "$crate has no library target; nothing to semver-check"; done
+          jq -r ".packages[] | select($publishes) | select($placeholder | not) | select($has_lib) | .name" <<< "$metadata" > "$RUNNER_TEMP/candidates"
+          while read -r crate; do
+            status=$(curl -s -o /dev/null -w '%{http_code}' --retry 3 --retry-all-errors \
+                       --max-time 30 -A "$USER_AGENT" "https://crates.io/api/v1/crates/$crate" || true)
+            case "$status" in
+              200) echo "$crate" >> "$RUNNER_TEMP/crates" ;;
+              404) echo "$crate is not on crates.io yet; nothing to compare against" ;;
+              *)   echo "::error::crates.io answered $status for $crate"; exit 1 ;;
+            esac
+          done < "$RUNNER_TEMP/candidates"
+          if [ -s "$RUNNER_TEMP/crates" ]; then echo "any=true" >> "$GITHUB_OUTPUT"; fi
+
+      # Both the current tree and the crates.io baseline are built for
+      # rustdoc on every run; the cache carries both under target/.
+      - name: Install Rust
+        if: steps.crates.outputs.any == 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo
+        if: steps.crates.outputs.any == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: semver-preview
+          cache-bin: false
+
+      - name: Install cargo-semver-checks
+        if: steps.crates.outputs.any == 'true'
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-semver-checks
+          fallback: none
+
+      - name: Check semver against the last release
+        if: steps.crates.outputs.any == 'true'
+        run: |
+          set -euo pipefail
+          args=()
+          while read -r crate; do args+=(-p "$crate"); done < "$RUNNER_TEMP/crates"
+          cargo semver-checks check-release "${args[@]}"

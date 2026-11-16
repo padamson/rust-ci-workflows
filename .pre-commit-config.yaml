@@ -1,0 +1,40 @@
+# prek hooks: run `prek install` once per clone (it writes .git/hooks,
+# which a sandboxed session cannot). Every hook runs a tool already on
+# PATH, so there are no hook revs to pin. CLAUDE.md lists the tools.
+repos:
+  - repo: local
+    hooks:
+      - id: actionlint
+        name: actionlint
+        entry: actionlint
+        language: system
+        files: ^\.github/workflows/
+        pass_filenames: false
+
+      - id: zizmor
+        name: zizmor
+        entry: zizmor --offline .
+        language: system
+        files: ^\.github/
+        pass_filenames: false
+
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets --locked -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-nextest
+        name: cargo nextest
+        entry: cargo nextest run --locked
+        language: system
+        types: [rust]
+        pass_filenames: false

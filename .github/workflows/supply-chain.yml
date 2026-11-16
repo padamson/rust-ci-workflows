@@ -1,0 +1,110 @@
+name: Supply chain
+
+# deny and vet, the supply-chain gates. A repo's security.yml calls this on
+# every push and pull request, and its release.yml calls it on the tag so
+# both gates judge the tagged commit before anything publishes. The caller's
+# job id prefixes each check name: a caller job `supply-chain` reports
+# `supply-chain / License & Dependency Check` and
+# `supply-chain / Supply Chain Review`.
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  # cargo deny checks licenses, bans and sources. Advisories run through
+  # cargo-lockpatrol, which reads the one ignore list in the caller's
+  # `deny.toml` and covers every tracked Cargo.lock rather than the root one
+  # alone. Its default `locked: root` fails a root Cargo.lock that
+  # disagrees with its manifests as broken rather than re-resolving it.
+  deny:
+    name: License & Dependency Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      # Every install-action step sets `fallback: none`. The default,
+      # `cargo-binstall`, checks no checksum, and it quietly installs a tool
+      # missing from the action's manifest instead of failing.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-deny
+          fallback: none
+
+      # --locked: without it this step re-resolves a stale Cargo.lock in the
+      # checkout, and the advisory step below then reads the rewritten lock
+      # instead of the committed one. The binary is called by name, not as
+      # `cargo deny`, so an alias in the checkout's `.cargo/config.toml`
+      # cannot stand in for it.
+      - name: Run cargo deny
+        run: cargo-deny --workspace --locked check bans licenses sources
+
+      - name: Check advisories in every lockfile
+        uses: padamson/cargo-lockpatrol@e791845e4a03af540c2348755c3695041cdd54fd # v0.2.0
+
+  supply-chain:
+    name: Supply Chain Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Check for the audit file before installing anything: a repo that has
+      # not run `cargo vet init` yet skips in seconds. A tag does not skip, since with no store nothing
+      # vets what the release publishes.
+      - name: Check for supply-chain/
+        id: vet
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ -f supply-chain/audits.toml ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif [ "$REF_TYPE" = tag ]; then
+            echo "::error::supply-chain/ is not initialized, so nothing vets this release. Run 'cargo vet init', commit it, and tag that commit."
+            exit 1
+          else
+            echo "supply-chain/ not initialized; skipping. Run 'cargo vet init' to enable."
+          fi
+
+      - name: Install Rust
+        if: steps.vet.outputs.enabled == 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      # A checksummed release binary, pinned by install-action's manifest
+      # and moved by Dependabot with the action. cargo-vet refuses a store
+      # written by a newer version, so if a contributor's local cargo-vet
+      # gets ahead of this one, bump the action.
+      - name: Install cargo-vet
+        if: steps.vet.outputs.enabled == 'true'
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-vet
+          fallback: none
+
+      # The binary is called by name, not as `cargo vet`, so an alias in the
+      # checkout's `.cargo/config.toml` cannot stand in for it; called that
+      # way it needs `CARGO` set, which cargo otherwise does for it. Not
+      # `--locked`: vet writes each trusted publisher's new version into
+      # imports.lock and Dependabot changes only Cargo.lock, so a locked run
+      # fails every bump of a trusted publisher's crate.
+      - name: Run cargo vet
+        if: steps.vet.outputs.enabled == 'true'
+        run: CARGO="$(command -v cargo)" cargo-vet vet
