@@ -6,6 +6,24 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `supply-chain.yml`: a `deny-manifests` input, the directories outside the
+  workspace whose bans, licenses, and sources the deny job also checks,
+  unlocked, against the root's `deny.toml`. Each needs a tracked
+  `Cargo.lock`, so the advisory check covers it too.
+- `semver-preview.yml`: a `setup` input, Bash run before the build, as in
+  `mutation.yml`.
+
+### Changed
+
+- **Breaking:** `mutation.yml`'s full-sweep jobs are renamed. The job is
+  named `Mutation Testing (full)` and GitHub appends the shard, so a
+  running sweep reports `Mutation Testing (full) (0)`, unsharded included,
+  where it reported `Mutation Testing (full)` or `(full, shard 0/8)`. The
+  old name had an expression in it, which showed up unevaluated on every
+  push and pull request, where the sweep is skipped.
+
 ## [0.1.0] - 2026-11-16
 
 ### Added

@@ -13,6 +13,16 @@ name: Semver preview
 
 on:
   workflow_call:
+    inputs:
+      setup:
+        description: >-
+          Bash run before the build, for what the build needs that is not
+          checked in. The crates.io baseline runs the same build scripts as
+          the current tree. To set an environment variable for later steps
+          (e.g. one that tells a build script to skip a download), append
+          it to `$GITHUB_ENV`.
+        type: string
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
@@ -76,6 +86,15 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
+
+      # Ahead of the cache, so a CARGO_* variable it sets reaches the cache
+      # key.
+      - name: Run the caller's setup
+        if: steps.crates.outputs.any == 'true' && inputs.setup != ''
+        shell: bash
+        env:
+          SETUP: ${{ inputs.setup }}
+        run: eval "$SETUP"
 
       - name: Cache Cargo
         if: steps.crates.outputs.any == 'true'

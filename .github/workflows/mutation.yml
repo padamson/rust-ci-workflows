@@ -67,8 +67,13 @@ jobs:
           fi
           echo "list=$(jq -nc --argjson n "$SHARDS" '[range($n)]')" >> "$GITHUB_OUTPUT"
 
+  # A fixed name: GitHub evaluates a job's name only when the job runs, so
+  # on the push and pull request runs, where this job is skipped, an
+  # expression here showed up as raw `${{ }}` text in every check list.
+  # GitHub appends the matrix value to each running shard's name, so the
+  # shards read `Mutation Testing (full) (0)`, `(1)`, and so on.
   mutation-testing:
-    name: Mutation Testing (full${{ inputs.shards > 1 && format(', shard {0}/{1}', matrix.shard, inputs.shards) || '' }})
+    name: Mutation Testing (full)
     needs: plan
     runs-on: ubuntu-latest
     # GitHub's ceiling for a hosted job. A sweep that nears it needs more

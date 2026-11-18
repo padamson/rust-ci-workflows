@@ -9,6 +9,15 @@ name: Supply chain
 
 on:
   workflow_call:
+    inputs:
+      deny-manifests:
+        description: >-
+          Directories outside the workspace, one per line, each with its own
+          Cargo.toml and Cargo.lock (e.g. a fuzz tree or a site excluded from
+          the workspace). The deny job checks each one's bans, licenses, and
+          sources against the root's deny.toml, unlocked.
+        type: string
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
@@ -55,6 +64,44 @@ jobs:
 
       - name: Check advisories in every lockfile
         uses: padamson/cargo-lockpatrol@e791845e4a03af540c2348755c3695041cdd54fd # v0.2.0
+
+      # After the advisory check, because these runs are not --locked: a tree
+      # outside the workspace keeps its own lockfile, which goes stale
+      # whenever a dependency it shares with the workspace moves, and a
+      # locked run would turn that routine drift red. Unlocked, cargo-deny
+      # re-resolves a stale lockfile in the checkout, so it has to run after
+      # cargo-lockpatrol has read the committed one. Every directory is
+      # checked before the step fails, so one red run names them all.
+      - name: Run cargo deny on the excluded manifests
+        if: inputs.deny-manifests != ''
+        env:
+          DENY_MANIFESTS: ${{ inputs.deny-manifests }}
+        # A directory without a tracked Cargo.lock fails: cargo-lockpatrol
+        # reads only tracked lockfiles, so its advisories went unchecked.
+        run: |
+          set -euo pipefail
+          status=0
+          # The list comes in on fd 3, so nothing in the loop that reads
+          # stdin can swallow the rest of it.
+          while read -r dir <&3; do
+            dir=${dir%/}
+            if [ -z "$dir" ]; then continue; fi
+            if [ ! -f "$dir/Cargo.toml" ]; then
+              echo "::error::deny-manifests names '$dir', which has no Cargo.toml"
+              status=1
+              continue
+            fi
+            if ! git ls-files --error-unmatch "$dir/Cargo.lock" > /dev/null 2>&1; then
+              echo "::error::deny-manifests names '$dir', which has no tracked Cargo.lock, so no advisory check covers it"
+              status=1
+              continue
+            fi
+            echo "::group::cargo deny check bans licenses sources ($dir)"
+            cargo-deny --workspace --config "$GITHUB_WORKSPACE/deny.toml" --manifest-path "$dir/Cargo.toml" \
+              check bans licenses sources || status=1
+            echo "::endgroup::"
+          done 3<<< "$DENY_MANIFESTS"
+          exit "$status"
 
   supply-chain:
     name: Supply Chain Review

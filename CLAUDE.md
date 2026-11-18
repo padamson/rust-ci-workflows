@@ -19,9 +19,12 @@ What the self-test does not prove:
   (with its test) in the same push.
   The weekly and manual runs cover the full sweep, sharded in two.
 - **The semver check itself.** The fixture is `publish = false`, so
-  `semver-preview.yml` exercises only its crate listing; the
-  cargo-semver-checks install and run are first exercised by a caller with
-  a published crate.
+  `semver-preview.yml` exercises only its crate listing; its `setup` step
+  and the cargo-semver-checks install and run are first exercised by a
+  caller with a published crate.
+- **A failing excluded manifest.** `fixtures/excluded` proves that
+  `supply-chain.yml`'s `deny-manifests` step runs and passes, not that it
+  fails on a bad license or source.
 
 ## Development commands
 

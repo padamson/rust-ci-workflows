@@ -108,6 +108,8 @@ jobs:
   # actionlint 1.7.12 rejects. Revisit when actionlint accepts `$/`.
   supply-chain:
     uses: ./.github/workflows/supply-chain.yml # zizmor: ignore[self-repository]
+    with:
+      deny-manifests: fixtures/excluded
 
   semver-preview:
     uses: ./.github/workflows/semver-preview.yml # zizmor: ignore[self-repository]

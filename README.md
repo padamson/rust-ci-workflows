@@ -16,16 +16,18 @@ workflows read those files from the caller's checkout.
 | Workflow | Jobs (check names) | Runs on the caller's |
 |---|---|---|
 | `supply-chain.yml` | `License & Dependency Check`, `Supply Chain Review` | every event |
-| `mutation.yml` | `Mutation Testing (diff)`; `Mutation Testing (full)` | diff: `push`, `pull_request`; full: `workflow_dispatch`, `schedule` |
+| `mutation.yml` | `Mutation Testing (diff)`; `Mutation Testing (full) (<shard>)` | diff: `push`, `pull_request`; full: `workflow_dispatch`, `schedule` |
 | `semver-preview.yml` | `Semver preview` | `push`, `pull_request` |
 
 A called job reports its check as `<caller job> / <job name>`, so a caller
 job named `supply-chain` produces `supply-chain / Supply Chain Review`.
 Branch rulesets and any script that lists required checks need the `/`
-form. With `shards` above 1 the full sweep's jobs are named `Mutation
-Testing (full, shard 0/8)` through `(full, shard 7/8)`, counting from zero
-as cargo-mutants does; none of them suits a required check, since they run
-only on manual and scheduled runs.
+form. GitHub appends the shard to each full-sweep job's name, so they run
+as `Mutation Testing (full) (0)` through `(7)` with `shards: 8`, counting
+from zero as cargo-mutants does (and as `(full) (0)` alone with the
+default `shards: 1`), and are listed as `Mutation Testing (full)` on the
+runs that skip them. None of them suits a required check,
+since they run only on manual and scheduled runs.
 
 `supply-chain.yml` runs `cargo deny check bans licenses sources` with
 `--locked`, then the advisory check over every tracked `Cargo.lock` through
@@ -33,7 +35,16 @@ only on manual and scheduled runs.
 vet` (a release binary from install-action, so Dependabot moves its version
 with the action's pin). A repo with no `supply-chain/audits.toml` skips vet, except on a tag,
 where it fails: with no store, nothing vets what the release publishes.
-Release workflows call it on the tag for that reason.
+Release workflows call it on the tag for that reason. Its input:
+
+| Input | Type | Default | What it does |
+|---|---|---|---|
+| `deny-manifests` | string | `""` | Directories outside the workspace, one per line, each with its own `Cargo.toml` and a tracked `Cargo.lock` (a fuzz tree, say). The deny job runs `cargo deny --workspace check bans licenses sources` on each with the root's `deny.toml`, and fails on a directory without a tracked lockfile, since the advisory check would have skipped it. |
+
+Those runs are not `--locked`. An excluded tree's lockfile goes stale
+whenever a dependency it shares with the workspace moves, and a locked run
+would fail on that routine drift; a pre-commit hook is the place to catch
+it. They run after the advisory check, which reads the committed lockfiles.
 
 `mutation.yml` runs `cargo mutants --in-diff` over the lines a push or pull
 request changed, and the full sweep on a manual or scheduled run. A
@@ -55,7 +66,12 @@ still shows up red. Its inputs:
 publishable crate that has a library target and is already on crates.io.
 It is the early signal for a release's semver gate, not a required check:
 between releases `Cargo.toml` still carries the last released version, so
-a red run means the next release needs a bigger bump than planned.
+a red run means the next release needs a bigger bump than planned. Its
+input:
+
+| Input | Type | Default | What it does |
+|---|---|---|---|
+| `setup` | string | `""` | Bash run before the build, as in `mutation.yml`. The crates.io baseline runs the same build scripts as the current tree, so a variable that tells a build script to skip a download goes here, appended to `$GITHUB_ENV`. |
 
 ## Calling them
 
@@ -68,13 +84,19 @@ permissions:
 
 jobs:
   supply-chain:
-    uses: padamson/rust-ci-workflows/.github/workflows/supply-chain.yml@<sha> # v0.1.0
+    uses: padamson/rust-ci-workflows/.github/workflows/supply-chain.yml@<sha> # v0.2.0
+    with:
+      deny-manifests: |
+        fuzz
+        crates/site
 
   semver-preview:
-    uses: padamson/rust-ci-workflows/.github/workflows/semver-preview.yml@<sha> # v0.1.0
+    uses: padamson/rust-ci-workflows/.github/workflows/semver-preview.yml@<sha> # v0.2.0
+    with:
+      setup: echo "PLAYWRIGHT_SKIP_DRIVER_DOWNLOAD=1" >> "$GITHUB_ENV"
 
   mutation:
-    uses: padamson/rust-ci-workflows/.github/workflows/mutation.yml@<sha> # v0.1.0
+    uses: padamson/rust-ci-workflows/.github/workflows/mutation.yml@<sha> # v0.2.0
     with:
       shards: 8
       mutants-args: --test-workspace=true

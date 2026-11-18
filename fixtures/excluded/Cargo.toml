@@ -1,0 +1,12 @@
+# A tree outside the fixture's workspace, with its own Cargo.lock, for
+# `supply-chain.yml`'s `deny-manifests` input: `ci.yml` names it there, so
+# the deny job checks it against the root's deny.toml.
+[package]
+name = "rust-ci-workflows-excluded"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Its own workspace root, so cargo does not look for one above it.
+[workspace]
