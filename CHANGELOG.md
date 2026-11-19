@@ -6,6 +6,8 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-19
+
 ### Added
 
 - `supply-chain.yml`: a `deny-manifests` input, the directories outside the
@@ -37,5 +39,6 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `semver-preview.yml`: `cargo semver-checks check-release` against the
   last crates.io release, on push and pull request.
 
-[Unreleased]: https://github.com/padamson/rust-ci-workflows/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/padamson/rust-ci-workflows/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/padamson/rust-ci-workflows/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/padamson/rust-ci-workflows/releases/tag/v0.1.0
