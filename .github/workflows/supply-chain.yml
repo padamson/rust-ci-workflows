@@ -49,7 +49,7 @@ jobs:
       # `cargo-binstall`, checks no checksum, and it quietly installs a tool
       # missing from the action's manifest instead of failing.
       - name: Install cargo-deny
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-deny
           fallback: none
@@ -141,7 +141,7 @@ jobs:
       # gets ahead of this one, bump the action.
       - name: Install cargo-vet
         if: steps.vet.outputs.enabled == 'true'
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-vet
           fallback: none
